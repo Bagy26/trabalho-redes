@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetMonitor | Monitoramento de Rede</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js" defer></script>
+</head>
+
+<body>
+    <header class="header">
+        <div class="brand">
+            <div class="brand-icon">N</div>
+            <div>
+                <h1>NetMonitor</h1>
+                <p>Monitoramento de infraestrutura</p>
+            </div>
+        </div>
+
+        <div class="connection">
+            <span id="connection-indicator" class="indicator offline"></span>
+            <span id="connection-status">Conectando...</span>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="welcome">
+            <div>
+                <h2>Painel de monitoramento</h2>
+                <p>Acompanhe seus dispositivos e métricas em tempo real.</p>
+            </div>
+            <span id="last-update">Aguardando dados...</span>
+        </section>
+
+        <section class="summary-grid">
+            <article class="summary-card">
+                <span>Dispositivos online</span>
+                <strong id="device-count">0</strong>
+                <small>Dispositivos conectados</small>
+            </article>
+
+            <article class="summary-card">
+                <span>Alertas registrados</span>
+                <strong id="alert-count">0</strong>
+                <small>Alertas armazenados</small>
+            </article>
+
+            <article class="summary-card">
+                <span>CPU média</span>
+                <strong id="cpu-average">0%</strong>
+                <small>Uso dos dispositivos</small>
+            </article>
+
+            <article class="summary-card">
+                <span>Memória média</span>
+                <strong id="memory-average">0%</strong>
+                <small>Uso dos dispositivos</small>
+            </article>
+        </section>
+
+        <section class="panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Dispositivos monitorados</h2>
+                    <p>Estado e últimas métricas recebidas</p>
+                </div>
+            </div>
+
+            <div id="devices-list" class="devices-list">
+                <p class="empty">Aguardando dispositivos...</p>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Últimos alertas</h2>
+                    <p>Notificações geradas pelo monitoramento</p>
+                </div>
+            </div>
+
+            <div id="alerts-list" class="alerts-list">
+                <p class="empty">Nenhum alerta registrado.</p>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Histórico de métricas</h2>
+                    <p>Últimos registros recebidos pelo servidor</p>
+                </div>
+            </div>
+
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Dispositivo</th>
+                            <th>CPU</th>
+                            <th>Memória</th>
+                            <th>Temperatura</th>
+                            <th>Latência</th>
+                            <th>Horário</th>
+                        </tr>
+                    </thead>
+                    <tbody id="metrics-table">
+                        <tr>
+                            <td colspan="6" class="empty">
+                                Aguardando métricas...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        NetMonitor — Projeto de Redes de Computadores
+    </footer>
+</body>
+
+</html>
