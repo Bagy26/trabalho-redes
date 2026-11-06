@@ -1,0 +1,10 @@
+node_modules/
+
+.env
+.env.*
+!.env.example
+
+backend/data/users.json
+backend/data/devices.json
+backend/data/metrics.json
+backend/data/alerts.json

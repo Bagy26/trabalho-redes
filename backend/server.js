@@ -1,8 +1,22 @@
+const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config();
 
 const http = require('http');
 const WebSocket = require('ws');
 const fs = require('fs');
-const path = require('path');
+const authMiddleware = require('./auth/authMiddleware');
+const {
+    authenticateDevice
+} = require('./auth/deviceAuthService');
+
+const {
+    registerUser,
+    loginUser
+} = require('./auth/authService');
 
 const PORT = 3000;
 
@@ -140,17 +154,132 @@ function broadcast(message, sender) {
     }
 }
 
+// Lê os dados enviados no corpo da requisição HTTP
+function readRequestBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+
+        req.on('data', (chunk) => {
+            body += chunk;
+
+            if (body.length > 10000) {
+                reject(new Error('Corpo da requisição muito grande.'));
+                req.destroy();
+            }
+        });
+
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                resolve(data);
+            } catch (error) {
+                reject(new Error('JSON inválido.'));
+            }
+        });
+
+        req.on('error', (error) => {
+            reject(error);
+        });
+    });
+}
+
 // Servidor HTTP
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+    // Configuração de CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
+    // Cadastro de usuários
+    if (req.method === 'POST' && url.pathname === '/api/auth/register') {
+        try {
+            const { name, email, password } = await readRequestBody(req);
+
+            const user = await registerUser(name, email, password);
+
+            res.writeHead(201);
+
+            res.end(JSON.stringify({
+                message: 'Usuário cadastrado com sucesso!',
+                user
+            }));
+
+        } catch (error) {
+            console.error('Erro no cadastro:', error.message);
+
+            res.writeHead(400);
+
+            res.end(JSON.stringify({
+                error: error.message
+            }));
+        }
+
+        return;
+    }
+
+    // Login de usuários
+    if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+        try {
+            const { email, password } = await readRequestBody(req);
+
+            const result = await loginUser(email, password);
+
+            res.writeHead(200);
+
+            res.end(JSON.stringify({
+                message: 'Login realizado com sucesso!',
+                user: result.user,
+                token: result.token
+            }));
+
+        } catch (error) {
+            console.error('Erro no login:', error.message);
+
+            res.writeHead(401);
+
+            res.end(JSON.stringify({
+                error: error.message
+            }));
+        }
+
+        return;
+    }
+
+    // Verifica a sessão do usuário
+    if (req.method === 'GET' && url.pathname === '/api/auth/me') {
+        authMiddleware(req, res, () => {
+            res.writeHead(200, {
+                'Content-Type': 'application/json; charset=utf-8'
+            });
+
+            res.end(JSON.stringify({
+                user: req.user
+            }));
+        });
+
+        return;
+    }
+
     // Rota inicial
+
     // Entrega os arquivos da interface Web
     if (req.method === 'GET') {
         const publicFiles = {
             '/': {
+                file: 'index.html',
+                contentType: 'text/html; charset=utf-8'
+            },
+            '/index.html': {
                 file: 'index.html',
                 contentType: 'text/html; charset=utf-8'
             },
@@ -188,22 +317,24 @@ const server = http.createServer((req, res) => {
     }
     // Consulta o histórico de alertas
     if (req.method === 'GET' && url.pathname === '/api/alerts') {
-        const deviceId = url.searchParams.get('deviceId');
+        authMiddleware(req, res, () => {
+            const deviceId = url.searchParams.get('deviceId');
 
-        let result = alerts;
+            let result = alerts;
 
-        if (deviceId) {
-            result = result.filter(
-                alert => alert.deviceId === deviceId
-            );
-        }
+            if (deviceId) {
+                result = result.filter(
+                    alert => alert.deviceId === deviceId
+                );
+            }
 
-        res.writeHead(200);
+            res.writeHead(200);
 
-        res.end(JSON.stringify({
-            total: result.length,
-            alerts: result
-        }));
+            res.end(JSON.stringify({
+                total: result.length,
+                alerts: result
+            }));
+        });
 
         return;
     }
@@ -222,59 +353,68 @@ const server = http.createServer((req, res) => {
 
     // Lista os dispositivos conectados
     if (req.method === 'GET' && url.pathname === '/api/devices') {
-        const connectedDevices = Array.from(devices.entries()).map(
-            ([deviceId, socket]) => ({
-                deviceId,
-                name: socket.deviceName,
-                status: 'online'
-            })
-        );
+        authMiddleware(req, res, () => {
+            const connectedDevices = Array.from(devices.entries()).map(
+                ([deviceId, socket]) => ({
+                    deviceId,
+                    name: socket.deviceName,
+                    status: 'online'
+                })
+            );
 
-        res.writeHead(200);
+            res.writeHead(200);
 
-        res.end(JSON.stringify({
-            total: connectedDevices.length,
-            devices: connectedDevices
-        }));
+            res.end(JSON.stringify({
+                total: connectedDevices.length,
+                devices: connectedDevices
+            }));
+        });
 
         return;
     }
 
     // Consulta o histórico de métricas
+    // Rota protegida por autenticação JWT
+
     if (req.method === 'GET' && url.pathname === '/api/metrics') {
-        const deviceId = url.searchParams.get('deviceId');
-        const limitParam = url.searchParams.get('limit');
 
-        let result = metrics;
+        authMiddleware(req, res, () => {
 
-        if (deviceId) {
-            result = result.filter(
-                metric => metric.deviceId === deviceId
-            );
-        }
+            const deviceId = url.searchParams.get('deviceId');
+            const limitParam = url.searchParams.get('limit');
 
-        if (limitParam !== null) {
-            const limit = Number(limitParam);
+            let result = metrics;
 
-            if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-                res.writeHead(400);
-
-                res.end(JSON.stringify({
-                    error: 'O limite deve ser um número inteiro entre 1 e 1000.'
-                }));
-
-                return;
+            if (deviceId) {
+                result = result.filter(
+                    metric => metric.deviceId === deviceId
+                );
             }
 
-            result = result.slice(-limit);
-        }
+            if (limitParam !== null) {
+                const limit = Number(limitParam);
 
-        res.writeHead(200);
+                if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+                    res.writeHead(400);
 
-        res.end(JSON.stringify({
-            total: result.length,
-            metrics: result
-        }));
+                    res.end(JSON.stringify({
+                        error: 'O limite deve ser um número inteiro entre 1 e 1000.'
+                    }));
+
+                    return;
+                }
+
+                result = result.slice(-limit);
+            }
+
+            res.writeHead(200);
+
+            res.end(JSON.stringify({
+                total: result.length,
+                metrics: result
+            }));
+
+        });
 
         return;
     }
@@ -299,13 +439,78 @@ wss.on('connection', (socket) => {
         timestamp: new Date().toISOString()
     });
 
-    socket.on('message', (data) => {
+    socket.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
+            // Autenticação do dispositivo
+            if (message.type === 'DEVICE_AUTH') {
+                if (socket.isDeviceAuthenticated) {
+                    sendMessage(socket, {
+                        type: 'ERROR',
+                        message: 'Este dispositivo já está autenticado.'
+                    });
+
+                    return;
+                }
+
+                const { deviceId, password } = message;
+
+                try {
+                    const authenticatedDevice = await authenticateDevice(
+                        deviceId,
+                        password
+                    );
+
+                    socket.isDeviceAuthenticated = true;
+                    socket.authenticatedDeviceId = authenticatedDevice.deviceId;
+                    socket.authenticatedDeviceName = authenticatedDevice.name;
+
+                    console.log(`Dispositivo autenticado: ${authenticatedDevice.deviceId}`);
+
+                    sendMessage(socket, {
+                        type: 'DEVICE_AUTHENTICATED',
+                        deviceId: authenticatedDevice.deviceId,
+                        name: authenticatedDevice.name,
+                        message: 'Autenticação realizada com sucesso!'
+                    });
+
+                } catch (error) {
+                    console.log('Falha na autenticação de dispositivo:', error.message);
+
+                    sendMessage(socket, {
+                        type: 'ERROR',
+                        message: 'Dispositivo ou senha inválidos.'
+                    });
+
+                    socket.close(1008, 'Falha na autenticação');
+                }
+
+                return;
+            }
 
             // Registro do dispositivo
             if (message.type === 'DEVICE_REGISTER') {
-                const { deviceId, name } = message;
+
+                if (!socket.isDeviceAuthenticated) {
+                    sendMessage(socket, {
+                        type: 'ERROR',
+                        message: 'Autentique o dispositivo antes de registrá-lo.'
+                    });
+
+                    return;
+                }
+
+                const deviceId = message.deviceId;
+                const name = socket.authenticatedDeviceName;
+
+                if (deviceId !== socket.authenticatedDeviceId) {
+                    sendMessage(socket, {
+                        type: 'ERROR',
+                        message: 'O identificador não corresponde ao dispositivo autenticado.'
+                    });
+
+                    return;
+                }
 
                 if (
                     typeof deviceId !== 'string' ||
@@ -346,12 +551,19 @@ wss.on('connection', (socket) => {
                     message: 'Dispositivo registrado com sucesso!'
                 });
 
+                // Notifica os clientes do painel que o dispositivo conectou
+                broadcast({
+                    type: 'DEVICE_CONNECTED',
+                    deviceId,
+                    name: socket.deviceName
+                }, socket);
+
                 return;
             }
 
             // Recebimento das métricas
             if (message.type === 'DEVICE_METRIC') {
-                if (!socket.deviceId) {
+                if (!socket.isDeviceAuthenticated || !socket.deviceId) {
                     sendMessage(socket, {
                         type: 'ERROR',
                         message: 'Registre o dispositivo antes de enviar métricas.'
@@ -455,8 +667,15 @@ wss.on('connection', (socket) => {
             socket.deviceId &&
             devices.get(socket.deviceId) === socket
         ) {
-            devices.delete(socket.deviceId);
-            console.log(`Dispositivo desconectado: ${socket.deviceId}`);
+            const disconnectedId = socket.deviceId;
+            devices.delete(disconnectedId);
+            console.log(`Dispositivo desconectado: ${disconnectedId}`);
+
+            // Notifica os clientes do painel da desconexão
+            broadcast({
+                type: 'DEVICE_DISCONNECTED',
+                deviceId: disconnectedId
+            }, socket);
         } else {
             console.log('Cliente desconectado.');
         }

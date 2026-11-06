@@ -1,6 +1,37 @@
+const isDevPort = window.location.port && window.location.port !== '3000';
+const isFileOrigin = window.location.protocol === 'file:' || window.location.origin === 'null';
 
-const API_URL = window.location.origin;
-const WS_URL = `ws://${window.location.host}`;
+const API_URL = (isFileOrigin || isDevPort)
+    ? 'http://localhost:3000'
+    : window.location.origin;
+
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = (isFileOrigin || isDevPort)
+    ? 'ws://localhost:3000'
+    : `${WS_PROTOCOL}//${window.location.host}`;
+
+// Controle de autenticação
+let socket = null;
+let refreshInterval = null;
+let currentUser = null;
+
+// Elementos da autenticação
+const authView = document.getElementById('auth-view');
+const dashboardView = document.getElementById('dashboard-view');
+
+const loginSection = document.getElementById('login-section');
+const registerSection = document.getElementById('register-section');
+
+const loginForm = document.getElementById('login-form');
+const registerForm = document.getElementById('register-form');
+
+const loginMessage = document.getElementById('login-message');
+const registerMessage = document.getElementById('register-message');
+
+const logoutButton = document.getElementById('logout-button');
+
+const showRegisterButton = document.getElementById('show-register');
+const showLoginButton = document.getElementById('show-login');
 
 const devices = new Map();
 let metrics = [];
@@ -19,6 +50,225 @@ function escapeHTML(value) {
         "'": '&#39;'
     })[character]);
 }
+
+// Alterna entre as telas de login e cadastro
+function showLogin() {
+    loginSection.hidden = false;
+    registerSection.hidden = true;
+
+    loginMessage.textContent = '';
+    registerMessage.textContent = '';
+}
+
+function showRegister() {
+    loginSection.hidden = true;
+    registerSection.hidden = false;
+
+    loginMessage.textContent = '';
+    registerMessage.textContent = '';
+}
+
+// Eventos dos botões de alternância
+showRegisterButton.addEventListener('click', showRegister);
+
+showLoginButton.addEventListener('click', showLogin);
+
+// Realiza o cadastro de um novo usuário
+async function registerUser(event) {
+    event.preventDefault();
+
+    registerMessage.textContent = '';
+
+    const name = document.getElementById('register-name').value.trim();
+    const email = document.getElementById('register-email').value.trim();
+    const password = document.getElementById('register-password').value;
+
+    try {
+        const response = await fetch(`${API_URL}/api/auth/register`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                name,
+                email,
+                password
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Não foi possível realizar o cadastro.');
+        }
+
+        registerForm.reset();
+
+        showLogin();
+
+        loginMessage.style.color = 'var(--success)';
+        loginMessage.textContent = 'Cadastro realizado! Faça login para continuar.';
+
+    } catch (error) {
+        registerMessage.style.color = 'var(--danger)';
+        registerMessage.textContent = error.message;
+    }
+}
+
+
+// Realiza o login de um usuário
+async function loginUser(event) {
+    event.preventDefault();
+
+    loginMessage.textContent = '';
+    loginMessage.style.color = 'var(--danger)';
+
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+
+    try {
+        const response = await fetch(`${API_URL}/api/auth/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                email,
+                password
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Não foi possível realizar o login.');
+        }
+
+        if (!data.token) {
+            throw new Error('O servidor não retornou o token de autenticação.');
+        }
+
+        // Armazena o token durante a sessão da aba
+        sessionStorage.setItem('authToken', data.token);
+
+        // Guarda os dados do usuário autenticado
+        currentUser = data.user;
+
+        loginForm.reset();
+
+        enterDashboard();
+    } catch (error) {
+        loginMessage.style.color = 'var(--danger)';
+        loginMessage.textContent = error.message;
+    }
+}
+
+// Evento de envio do formulário de login
+loginForm.addEventListener('submit', loginUser);
+
+// Recupera o token e prepara o cabeçalho de autenticação
+function getAuthHeaders() {
+    const token = sessionStorage.getItem('authToken');
+
+    if (!token) {
+        return {};
+    }
+
+    return {
+        Authorization: `Bearer ${token}`
+    };
+}
+
+async function checkSession() {
+    const token = sessionStorage.getItem('authToken');
+
+    if (!token) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/api/auth/me`, {
+            headers: getAuthHeaders()
+        });
+
+        console.log('Resposta da sessão:', response.status);
+
+        if (!response.ok) {
+            throw new Error('Sessão inválida ou expirada.');
+        }
+
+        const data = await response.json();
+
+        currentUser = data.user;
+
+        console.log('Sessão recuperada:', currentUser);
+
+        enterDashboard();
+
+    } catch (error) {
+        sessionStorage.removeItem('authToken');
+        currentUser = null;
+
+        console.log('Não foi possível recuperar a sessão:', error.message);
+    }
+}
+
+checkSession();
+
+// Libera o dashboard após a autenticação
+function enterDashboard() {
+    authView.hidden = true;
+    dashboardView.hidden = false;
+    logoutButton.hidden = false;
+
+    loadInitialData();
+    connectWebSocket();
+
+    // Evita criar vários intervalos de atualização
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+    }
+
+    refreshInterval = setInterval(refreshDevices, 3000);
+}
+
+// Encerra a sessão do usuário
+function logoutUser() {
+    sessionStorage.removeItem('authToken');
+
+    currentUser = null;
+
+    // Interrompe as atualizações periódicas
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
+
+    // Fecha a conexão WebSocket
+    if (socket) {
+        socket.close();
+        socket = null;
+    }
+
+    // Limpa os dados apresentados no dashboard
+    devices.clear();
+    metrics = [];
+    alerts = [];
+
+    // Retorna para a tela de login
+    dashboardView.hidden = true;
+    authView.hidden = false;
+    logoutButton.hidden = true;
+
+    showLogin();
+}
+
+// Evento do botão Sair
+logoutButton.addEventListener('click', logoutUser);
+
+
+// Evento de envio do formulário de cadastro
+registerForm.addEventListener('submit', registerUser);
 
 function formatTime(timestamp) {
     return new Date(timestamp).toLocaleString('pt-BR');
@@ -39,9 +289,15 @@ async function loadInitialData() {
     try {
         const [devicesResponse, metricsResponse, alertsResponse] =
             await Promise.all([
-                fetch(`${API_URL}/api/devices`),
-                fetch(`${API_URL}/api/metrics?limit=100`),
-                fetch(`${API_URL}/api/alerts`)
+                fetch(`${API_URL}/api/devices`, {
+                    headers: getAuthHeaders()
+                }),
+                fetch(`${API_URL}/api/metrics?limit=100`, {
+                    headers: getAuthHeaders()
+                }),
+                fetch(`${API_URL}/api/alerts`, {
+                    headers: getAuthHeaders()
+                })
             ]);
 
         if (!devicesResponse.ok || !metricsResponse.ok || !alertsResponse.ok) {
@@ -83,7 +339,9 @@ async function loadInitialData() {
 // Consulta periodicamente a lista de dispositivos conectados
 async function refreshDevices() {
     try {
-        const response = await fetch(`${API_URL}/api/devices`);
+        const response = await fetch(`${API_URL}/api/devices`, {
+            headers: getAuthHeaders()
+        });
 
         if (!response.ok) {
             throw new Error('Falha ao consultar dispositivos.');
@@ -176,7 +434,7 @@ function renderDevices() {
             <article class="device-card">
                 <div class="device-top">
                     <strong>${escapeHTML(device.name)}</strong>
-                    <span class="status">
+                    <span class="status status-${escapeHTML(device.status)}">
                         ${escapeHTML(device.status)}
                     </span>
                 </div>
@@ -264,6 +522,7 @@ function handleMetric(metric) {
 
     if (device) {
         device.lastMetric = metric;
+        device.status = 'online';
     } else {
         devices.set(metric.deviceId, {
             deviceId: metric.deviceId,
@@ -286,15 +545,33 @@ function handleAlert(alert) {
 }
 
 // Conexão WebSocket
+// Conexão WebSocket
 function connectWebSocket() {
-    const socket = new WebSocket(WS_URL);
 
-    socket.addEventListener('open', () => {
+    // Não cria outra conexão se já existir uma ativa ou em andamento
+    if (!currentUser) return;
+
+    if (
+        socket &&
+        (
+            socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING
+        )
+    ) {
+        return;
+    }
+
+    socket = new WebSocket(WS_URL);
+
+    // Guarda a referência desta conexão específica
+    const currentSocket = socket;
+
+    currentSocket.addEventListener('open', () => {
         console.log('WebSocket conectado.');
         updateConnection(true);
     });
 
-    socket.addEventListener('message', event => {
+    currentSocket.addEventListener('message', event => {
         try {
             const message = JSON.parse(event.data);
 
@@ -306,27 +583,53 @@ function connectWebSocket() {
                 handleAlert(message);
             }
 
+            if (message.type === 'DEVICE_CONNECTED') {
+                const existing = devices.get(message.deviceId);
+                devices.set(message.deviceId, {
+                    deviceId: message.deviceId,
+                    name: message.name,
+                    status: 'online',
+                    lastMetric: existing?.lastMetric || null
+                });
+                renderDashboard();
+            }
+
+            if (message.type === 'DEVICE_DISCONNECTED') {
+                const existing = devices.get(message.deviceId);
+                if (existing) {
+                    devices.set(message.deviceId, {
+                        ...existing,
+                        status: 'offline'
+                    });
+                    renderDashboard();
+                }
+            }
+
         } catch (error) {
             console.error('Erro ao interpretar mensagem:', error.message);
         }
     });
 
-    socket.addEventListener('close', () => {
+    currentSocket.addEventListener('close', () => {
         updateConnection(false);
-        console.log('WebSocket desconectado. Tentando reconectar...');
 
-        setTimeout(connectWebSocket, 3000);
+        console.log('WebSocket desconectado.');
+
+        // Só altera a conexão se ela ainda for a atual
+        if (socket === currentSocket) {
+            socket = null;
+        }
+
+        if (currentUser) {
+            console.log('Tentando reconectar...');
+
+            setTimeout(() => {
+                connectWebSocket();
+            }, 3000);
+        }
     });
 
-    socket.addEventListener('error', error => {
+    currentSocket.addEventListener('error', error => {
         console.error('Erro na conexão WebSocket:', error);
-        socket.close();
     });
 }
-
-// Inicialização do painel
-loadInitialData();
-connectWebSocket();
-
-// Atualiza os dispositivos conectados a cada 3 segundos
-setInterval(refreshDevices, 3000);
